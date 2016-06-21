@@ -28,6 +28,8 @@ function optim.sgd(opfunc, x, config, state)
    -- (0) get/update state
    local config = config or {}
    local state = state or config
+   local gemma = config.gemma or 0.1
+   local interval = config.interval or 9000
    local lr = config.learningRate or 1e-3
    local lrd = config.learningRateDecay or 0
    local wd = config.weightDecay or 0
@@ -42,49 +44,56 @@ function optim.sgd(opfunc, x, config, state)
 
    -- (1) evaluate f(x) and df/dx
    local fx,dfdx = opfunc(x)
-
-   -- (2) weight decay with single or individual parameters
+   
+   -- (2) L2 regularization
+   
    if wd ~= 0 then
       dfdx:add(wd, x)
    elseif wds then
       if not state.decayParameters then
-         state.decayParameters = torch.Tensor():typeAs(x):resizeAs(dfdx)
+         state.decayParameters = torch.Tensor():typesAs(x):resizeAs(dfdx)
       end
       state.decayParameters:copy(wds):cmul(x)
-      dfdx:add(state.decayParameters)
+      dfdx:add(wd, state.decayParameters)
    end
-
-   -- (3) apply momentum
-   if mom ~= 0 then
-      if not state.dfdx then
-         state.dfdx = torch.Tensor():typeAs(dfdx):resizeAs(dfdx):copy(dfdx)
-      else
-         state.dfdx:mul(mom):add(1-damp, dfdx)
-      end
-      if nesterov then
-         dfdx:add(mom, state.dfdx)
-      else
-         dfdx = state.dfdx
-      end
-   end
-
-   -- (4) learning rate decay (annealing)
-   local clr = lr / (1 + nevals*lrd)
    
-   -- (5) parameter update with single or individual learning rates
+   -- (3) learning rate decay (annealing)   
+
+   local clr = lr * (gemma^math.floor(nevals/interval))
+
+   -- (4) parameter update with single or individual learning rates
    if lrs then
       if not state.deltaParameters then
          state.deltaParameters = torch.Tensor():typeAs(x):resizeAs(dfdx)
       end
       state.deltaParameters:copy(lrs):cmul(dfdx)
-      x:add(-clr, state.deltaParameters)
    else
-      x:add(-clr, dfdx)
+      if not state.deltaParameters then
+         state.deltaParameters = torch.Tensor():typeAs(x):resizeAs(dfdx)
+      end
+      state.deltaParameters:copy(dfdx)
    end
-
-   -- (6) update evaluation counter
+   state.deltaParameters = state.deltaParameters*clr
+   
+   -- (5) apply momentum
+   
+   if mom ~= 0 then
+      if not state.dfdx then
+         state.dfdx = torch.Tensor():typeAs(dfdx):resizeAs(dfdx):copy(state.deltaParameters)
+      else
+         state.dfdx:mul(mom):add(state.deltaParameters)
+      end
+   end
+   
+   -- (6) parameter update with single or individual learning rates
+      
+   x:add(-state.dfdx)
+   
+   -- (7) update evaluation counter
+   
    state.evalCounter = state.evalCounter + 1
 
    -- return x*, f(x) before optimization
+   
    return x,{fx}
 end
